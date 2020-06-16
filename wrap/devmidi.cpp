@@ -125,8 +125,7 @@ static bool SliderFloatN(int components, const char* id, MIDIState* curr, MIDISt
 	gui::EndGroup();
 	return touched;
 }
-static bool SliderFloatNClickPrint(int components, const char* id, MIDIState* curr, MIDIState* prev, const int* knobs, float* v, float* v_defaults, float v_min, float v_max, const char* format, float power) {	
-	(void)v_defaults;
+static void Print(int components, const char* id, MIDIState* curr, MIDIState* prev, const int* knobs, float* v, const char* format) {
 	bool any_pressed = false;
 	for (int i = 0; i < components; ++i)
 		any_pressed |= Press(curr, prev, knobs[i]);
@@ -143,6 +142,10 @@ static bool SliderFloatNClickPrint(int components, const char* id, MIDIState* cu
 		log("\n");
 		gui::SetClipboardText(csv);
 	}
+}
+static bool SliderFloatNClickPrint(int components, const char* id, MIDIState* curr, MIDIState* prev, const int* knobs, float* v, float* v_defaults, float v_min, float v_max, const char* format, float power) {	
+	(void)v_defaults;
+	Print(components, id, curr, prev, knobs, v, format);
 	return SliderFloatN(components, id, curr, prev, knobs, v, 0, v_min, v_max, format, power);
 }
 static bool SliderFloatNClickToggle(int components, const char* id, MIDIState* curr, MIDIState* prev, const int* knobs, float* v, float* v_defaults, float v_min, float v_max, const char* format, float power) {
@@ -159,6 +162,65 @@ static bool SliderFloatNClickToggle(int components, const char* id, MIDIState* c
 		}
 	}
 	return SliderFloatN(components, id, curr, prev, knobs, v, 0, v_min, v_max, format, power) || touched;
+}
+static bool ColorEditN(int components, const char* id, MIDIState* curr, MIDIState* prev, const int* knobs, float* v, float* v_defaults, ImGuiColorEditFlags flags) {
+	if (!v_defaults)
+		Print(components, id, curr, prev, knobs, v, "%.3f");
+
+	bool touched = false;
+	float edit[4];
+	/* Copy color into the edit by default. */
+	for (int i = 0; i < components; ++i)
+		edit[i] = v[i];
+	/* If we are editing in HSV and it's not the native format, convert into that first. */
+	bool convert_to_hsv = (flags & ImGuiColorEditFlags_DisplayHSV) && !(flags & ImGuiColorEditFlags_InputHSV);
+	if (convert_to_hsv)
+		gui::ColorConvertRGBtoHSV(v[0], v[1], v[2], edit[0], edit[1], edit[2]);
+	/* Perform the editing operation. */
+	for (int i = 0; i < components; ++i) {
+		int del = curr->value[knobs[i]] - prev->value[knobs[i]];
+		edit[i] += del * 1.0f / 256.0f;
+		/* In HSV, loop the color. In RGB, saturate it. */
+		if ((convert_to_hsv || (flags & ImGuiColorEditFlags_InputHSV)) && i == 0)
+			edit[i] = edit[i] - floorf(edit[i]);
+		else
+			edit[i] = max(0.0f, min(1.0f, edit[i]));
+		if (v_defaults) {
+			if (Release(curr, prev, knobs[i])) {
+				edit[i] = v_defaults[i];
+				touched = true;
+			}
+		}
+		touched |= del != 0;
+	}
+	/* Convert back to RGB if we converted to HSV earlier. */
+	if (convert_to_hsv) {
+		gui::ColorConvertHSVtoRGB(edit[0], edit[1], edit[2], v[0], v[1], v[2]);
+		v[3] = edit[3];
+	}
+	else {
+		for (int i = 0; i < components; ++i)
+			v[i] = edit[i];
+	}
+
+	/* Perform reset to defaults, if needed. */
+	if (v_defaults) {
+		for (int i = 0; i < components; ++i) {		
+			if (Release(curr, prev, knobs[i])) {
+				edit[i] = v_defaults[i];
+				touched = true;
+			}
+		}
+	}
+
+	if (components == 3)
+		return gui::ColorEdit3(id, v, flags) || touched;
+	else if (components == 4)
+		return gui::ColorEdit4(id, v, flags) || touched;
+	else {
+		assert(false);
+		return false;
+	}
 }
 
 /*----------------------------------------------*/
@@ -184,19 +246,19 @@ static int fighterButtonRemap(int button) {
 
 bool twisterSliderFloat(const char* id, int knob, float* v, float v_min, float v_max, const char* format, float power) {
 	int knobs[] = { twisterKnobRemap(knob) };
-	return SliderFloatN(1, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+	return SliderFloatNClickPrint(1, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
 }
 bool twisterSliderFloat2(const char* id, int knob0, int knob1, float* v, float v_min, float v_max, const char* format, float power) {
 	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1) };
-	return SliderFloatN(2, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+	return SliderFloatNClickPrint(2, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
 }
 bool twisterSliderFloat3(const char* id, int knob0, int knob1, int knob2, float* v, float v_min, float v_max, const char* format, float power) {
 	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2) };
-	return SliderFloatN(3, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+	return SliderFloatNClickPrint(3, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
 }
 bool twisterSliderFloat4(const char* id, int knob0, int knob1, int knob2, int knob3, float* v, float v_min, float v_max, const char* format, float power) {
 	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2), twisterKnobRemap(knob3) };
-	return SliderFloatN(4, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+	return SliderFloatNClickPrint(4, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
 }
 bool twisterSliderFloatClickDefault(const char* id, int knob, float* v, float v_default, float v_min, float v_max, const char* format, float power) {
 	int knobs[] = { twisterKnobRemap(knob) };
@@ -214,22 +276,6 @@ bool twisterSliderFloat4ClickDefault(const char* id, int knob0, int knob1, int k
 	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2), twisterKnobRemap(knob3) };
 	return SliderFloatN(4, id, twister_curr, twister_prev, knobs, v, v_defaults, v_min, v_max, format, power);
 }
-bool twisterSliderFloatClickPrint(const char* id, int knob, float* v, float v_min, float v_max, const char* format, float power) {
-	int knobs[] = { twisterKnobRemap(knob) };
-	return SliderFloatNClickPrint(1, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
-}
-bool twisterSliderFloat2ClickPrint(const char* id, int knob0, int knob1, float* v, float v_min, float v_max, const char* format, float power) {
-	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1) };
-	return SliderFloatNClickPrint(2, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
-}
-bool twisterSliderFloat3ClickPrint(const char* id, int knob0, int knob1, int knob2, float* v, float v_min, float v_max, const char* format, float power) {
-	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2) };
-	return SliderFloatNClickPrint(3, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
-}
-bool twisterSliderFloat4ClickPrint(const char* id, int knob0, int knob1, int knob2, int knob3, float* v, float v_min, float v_max, const char* format, float power) {
-	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2), twisterKnobRemap(knob3) };
-	return SliderFloatNClickPrint(4, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
-}
 bool twisterSliderFloatClickToggle(const char* id, int knob, float* v, float v_min, float v_max, const char* format, float power) {
 	int knobs[] = { twisterKnobRemap(knob) };
 	return SliderFloatNClickToggle(1, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
@@ -245,6 +291,22 @@ bool twisterSliderFloat3ClickToggle(const char* id, int knob0, int knob1, int kn
 bool twisterSliderFloat4ClickToggle(const char* id, int knob0, int knob1, int knob2, int knob3, float* v, float v_min, float v_max, const char* format, float power) {
 	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2), twisterKnobRemap(knob3) };
 	return SliderFloatNClickToggle(4, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+}
+bool twisterColorEdit3(const char* id, int knob0, int knob1, int knob2, float col[3], ImGuiColorEditFlags flags) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2) };
+	return ColorEditN(3, id, twister_curr, twister_prev, knobs, col, 0, flags);
+}
+bool twisterColorEdit4(const char* id, int knob0, int knob1, int knob2, int knob3, float col[4], ImGuiColorEditFlags flags) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2), twisterKnobRemap(knob3) };
+	return ColorEditN(4, id, twister_curr, twister_prev, knobs, col, 0, flags);
+}
+bool twisterColorEdit3ClickDefault(const char* id, int knob0, int knob1, int knob2, float col[3], float col_default[3], ImGuiColorEditFlags flags) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2) };
+	return ColorEditN(3, id, twister_curr, twister_prev, knobs, col, col_default, flags);
+}
+bool twisterColorEdit4ClickDefault(const char* id, int knob0, int knob1, int knob2, int knob3, float col[4], float col_default[4], ImGuiColorEditFlags flags) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2), twisterKnobRemap(knob3) };
+	return ColorEditN(4, id, twister_curr, twister_prev, knobs, col, col_default, flags);
 }
 bool twisterKnobButton(const char* id, int knob) {
 	return ButtonPress(id, twister_curr, twister_prev, twisterKnobRemap(knob));

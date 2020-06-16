@@ -1,11 +1,19 @@
 #pragma once
 
 #include "midi_wrap.h"
+#include "imgui/imgui.h" // for ImGuiColorEditFlags
 
 /* Simple API to address my particular dev midi setup. */
 /* Allows binding values to a particular midi controller and ImGui at the same time. */
 
-/* Standard ImGui Slider. */
+/* Initialize the library (opens midi devices). Call once at app start. */
+void devmidiInit();
+/* Poll the midi data. Call once every frame, before the app reads the inputs. */
+void devmidiUpdate();
+/* Terminate the library (closes midi devices). Call once at app end. */
+void devmidiTerm();
+
+/* Standard ImGui Slider. On knob click, print the value to console and to clipboard. */
 bool twisterSliderFloat(const char* id, int knob, float* v, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f);
 bool twisterSliderFloat2(const char* id, int knob0, int knob1, float* v, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f);
 bool twisterSliderFloat3(const char* id, int knob0, int knob1, int knob2, float* v, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f);
@@ -20,11 +28,13 @@ bool twisterSliderFloatClickToggle(const char* id, int knob, float* v, float v_m
 bool twisterSliderFloat2ClickToggle(const char* id, int knob0, int knob1, float* v, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f);
 bool twisterSliderFloat3ClickToggle(const char* id, int knob0, int knob1, int knob2, float* v, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f);
 bool twisterSliderFloat4ClickToggle(const char* id, int knob0, int knob1, int knob2, int knob3, float* v, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f);
-/* On knob click, print the value to console and to clipboard. */
-bool twisterSliderFloatClickPrint(const char* id, int knob, float* v, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f);
-bool twisterSliderFloat2ClickPrint(const char* id, int knob0, int knob1, float* v, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f);
-bool twisterSliderFloat3ClickPrint(const char* id, int knob0, int knob1, int knob2, float* v, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f);
-bool twisterSliderFloat4ClickPrint(const char* id, int knob0, int knob1, int knob2, int knob3, float* v, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f);
+/* Standard ImGui Color Edit. On knob click, print the value to console and to clipboard. */
+bool twisterColorEdit3(const char* id, int knob0, int knob1, int knob2, float col[3], ImGuiColorEditFlags flags = 0);
+bool twisterColorEdit4(const char* id, int knob0, int knob1, int knob2, int knob3, float col[4], ImGuiColorEditFlags flags = 0);
+/* On knob click, reset value to the specified default. */
+bool twisterColorEdit3ClickDefault(const char* id, int knob0, int knob1, int knob2, float col[3], float col_default[3], ImGuiColorEditFlags flags = 0);
+bool twisterColorEdit4ClickDefault(const char* id, int knob0, int knob1, int knob2, int knob3, float col[4], float col_default[4], ImGuiColorEditFlags flags = 0);
+
 /* Standard ImGui Button operated by knob click. */
 bool twisterKnobButton(const char* id, int knob);
 /* Raw knob value. */
@@ -53,10 +63,20 @@ bool fighterRelease(int button);
 /* Is the button down. */
 bool fighterDown(int button);
 
-/* Initialize the library (opens midi devices). Call once at app start. */
-void devmidiInit();
-/* Poll the midi data. Call once every frame, before the app reads the inputs. */
-void devmidiUpdate();
-/* Terminate the library (closes midi devices). Call once at app end. */
-void devmidiTerm();
-
+/* Some convenience wrappers, specific to this app's vector structs. */
+#include "core/maths.h"
+inline bool twisterSliderFloat2ClickDefault(const char* id, int knob0, int knob1, float* v, vec2 v_defaults, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f) {
+	return twisterSliderFloat2ClickDefault(id, knob0, knob1, v, (float*)&v_defaults, v_min, v_max, format, power);
+}
+inline bool twisterSliderFloat3ClickDefault(const char* id, int knob0, int knob1, int knob2, float* v, vec3 v_defaults, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f) {
+	return twisterSliderFloat3ClickDefault(id, knob0, knob1, knob2, v, (float*)&v_defaults, v_min, v_max, format, power);
+}
+inline bool twisterSliderFloat4ClickDefault(const char* id, int knob0, int knob1, int knob2, int knob3, vec4 v, float* v_defaults, float v_min = 0.0f, float v_max = 1.0f, const char* format = "%.2f", float power = 1.0f) {
+	return twisterSliderFloat4ClickDefault(id, knob0, knob1, knob2, knob3, v, (float*)&v_defaults, v_min, v_max, format, power);
+}
+inline bool twisterColorEdit3ClickDefault(const char* id, int knob0, int knob1, int knob2, float col[3], vec3 col_default, ImGuiColorEditFlags flags = 0) {
+	return twisterColorEdit3ClickDefault(id, knob0, knob1, knob2, col, (float*)&col_default, flags);
+}
+inline bool twisterColorEdit4ClickDefault(const char* id, int knob0, int knob1, int knob2, int knob3, float col[4], vec4 col_default, ImGuiColorEditFlags flags = 0) {
+	return twisterColorEdit4ClickDefault(id, knob0, knob1, knob2, knob3, col, (float*)&col_default, flags);
+}
