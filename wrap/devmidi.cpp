@@ -1,12 +1,169 @@
 #include "devmidi.h"
 #include "core/log.h"
 #include "imgui/imgui.h"
+#include <stdio.h> // for sprintf_s
+
+/*----------------------------*/
+/* Core init/update/teardown. */
+/*----------------------------*/
 
 static MIDIDeviceConfig midi_device_config[] =
 {
 	MIDIDeviceConfig("Midi Fighter Twister", MIDI_CONTINUOUS_CONTROLLER_RELATIVE),
 	MIDIDeviceConfig("Midi Fighter 3D"),
 };
+
+static int write_idx = 0;
+static MIDIState twister[2];
+static MIDIState fighter[2];
+
+static MIDIState* twister_prev;
+static MIDIState* twister_curr;
+static MIDIState* fighter_prev;
+static MIDIState* fighter_curr;
+
+void devmidiInit() {
+	midiInit(midi_device_config, sizeof(midi_device_config) / sizeof(midi_device_config[0]));
+}
+void devmidiTerm() {
+	midiTerm();
+}
+void devmidiUpdate() {
+	if (midiGetState(&twister[write_idx], 0)) {
+	}
+	if (midiGetState(&fighter[write_idx], 1)) {
+	}
+	twister_curr = &twister[write_idx];
+	twister_prev = &twister[1 - write_idx];
+	fighter_curr = &fighter[write_idx];
+	fighter_prev = &fighter[1 - write_idx];
+	write_idx = 1 - write_idx;
+}
+
+/*--------------------*/
+/* Generic functions. */
+/*--------------------*/
+
+static bool Press(MIDIState* curr, MIDIState* prev, int button) {
+	return (curr->note_ons[button] - prev->note_ons[button]) > 0;
+}
+static bool Release(MIDIState* curr, MIDIState* prev, int button) {
+	return (curr->note_offs[button] - prev->note_offs[button]) > 0;
+}
+static bool Down(MIDIState* curr, MIDIState* prev, int button) {
+	return curr->note_ons[button] > prev->note_offs[button];
+}
+static bool ButtonPress(const char* id, MIDIState* curr, MIDIState* prev, int button) {
+	return gui::Button(id) || Press(curr, prev, button);
+}
+static bool ButtonRelease(const char* id, MIDIState* curr, MIDIState* prev, int button) {
+	return gui::Button(id) || Release(curr, prev, button);
+}
+static bool RadioButton(const char* id, MIDIState* curr, MIDIState* prev, int button, int* v, int v_button) {
+	bool touched = false;
+	if (Press(curr, prev, button)) {
+		*v = v_button;
+		touched = true;
+	}
+	return gui::RadioButton(id, v, v_button) || touched;
+}
+static bool Checkbox(const char* id, MIDIState* curr, MIDIState* prev, int button, bool* v) {
+	bool touched = false;
+	if (Press(curr, prev, button)) {
+		*v = !*v;
+		touched = true;
+	}
+	return gui::Checkbox(id, v) | touched;
+}
+static bool CheckboxMomentary(const char* id, MIDIState* curr, MIDIState* prev, int button, bool* v) {
+	bool touched = false;
+	if (Press(curr, prev, button) || Release(curr, prev, button)) {
+		*v = !*v;
+		touched = true;
+	}
+	return gui::Checkbox(id, v) | touched;
+}
+static bool SliderFloat(const char* id, MIDIState* curr, MIDIState* prev, int knob, float* v, float v_min, float v_max, const char* format, float power) {
+	float knob_scale = 1.0f / 100.0f;
+	if (format) {
+		const char* dig = format;
+		while (*dig && (*dig++ != '.'));
+		if (*dig) {
+			knob_scale = 1.0f / powf(10.0f, float(atoi(dig)));
+		}
+	}
+	int del = curr->value[knob] - prev->value[knob];
+	float linear_v = power == 1.0f ? *v : powf(*v, 1.0f / power);
+	linear_v = min(v_max, max(v_min, linear_v + del * knob_scale));
+	*v = power == 1.0f ? linear_v : powf(linear_v, power);
+
+	return gui::SliderFloat(id, v, v_min, v_max, format, power) || del != 0;
+}
+static bool SliderFloatN(int components, const char* id, MIDIState* curr, MIDIState* prev, const int* knobs, float* v, const float* v_defaults, float v_min, float v_max, const char* format, float power) {
+	gui::BeginGroup();
+	gui::PushID(id);
+	gui::PushItemWidth(gui::CalcItemWidth() / components);
+	gui::PushStyleVar(ImGuiStyleVar_ItemSpacing, gui::GetStyle().ItemInnerSpacing);
+	bool touched = false;
+	for (int i = 0; i < components; ++i) {
+		gui::PushID(i);
+		touched |= SliderFloat("", curr, prev, knobs[i], v + i, v_min, v_max, format, power);
+		gui::SameLine();
+		if (v_defaults) {
+			if (ButtonRelease("def", curr, prev, knobs[i])) {
+				v[i] = v_defaults[i];
+				touched = true;
+			}
+			gui::SameLine();
+		}
+		gui::PopID();
+	}
+	gui::Text(id);
+	gui::PopStyleVar();
+	gui::PopItemWidth();
+	gui::PopID();
+	gui::EndGroup();
+	return touched;
+}
+static bool SliderFloatNClickPrint(int components, const char* id, MIDIState* curr, MIDIState* prev, const int* knobs, float* v, float* v_defaults, float v_min, float v_max, const char* format, float power) {	
+	(void)v_defaults;
+	bool any_pressed = false;
+	for (int i = 0; i < components; ++i)
+		any_pressed |= Press(curr, prev, knobs[i]);
+	if (any_pressed) {
+		log("%s: ", id);
+		static char csv[256];
+		char* w = csv;
+		for (int i = 0; i < components; ++i) {
+			if (i > 0)
+				w += sprintf_s(w, sizeof(csv), ", ");
+			w += sprintf_s(w, sizeof(csv), format, v[i]);
+		}
+		log(csv);
+		log("\n");
+		gui::SetClipboardText(csv);
+	}
+	return SliderFloatN(components, id, curr, prev, knobs, v, 0, v_min, v_max, format, power);
+}
+static bool SliderFloatNClickToggle(int components, const char* id, MIDIState* curr, MIDIState* prev, const int* knobs, float* v, float* v_defaults, float v_min, float v_max, const char* format, float power) {
+	(void)v_defaults;
+	bool touched = false;
+	for (int i = 0; i < components; ++i) {
+		if (Release(curr, prev, knobs[i])) {
+			// Toggle to the extreme that is farthest from the current value.
+			if (fabs(v[i] - v_min) < fabs(v[i] - v_max))
+				v[i] = v_max;
+			else
+				v[i] = v_min;
+			touched = true;
+		}
+	}
+	return SliderFloatN(components, id, curr, prev, knobs, v, 0, v_min, v_max, format, power) || touched;
+}
+
+/*----------------------------------------------*/
+/* Specific functions tuned to the midi device. */
+/*----------------------------------------------*/
 
 // I have my device with it's cord up and away from me, and I want knob 0 to be the lower left hand corner.
 static int twisterKnobRemap(int knob) {
@@ -25,69 +182,81 @@ static int fighterButtonRemap(int button) {
 	return 51 - button; // first set of fighter buttons go from 36 to 51
 }
 
-
-static int write_idx = 0;
-static MIDIState twister[2];
-static MIDIState fighter[2];
-
-static MIDIState* twister_prev;
-static MIDIState* twister_curr;
-static MIDIState* fighter_prev;
-static MIDIState* fighter_curr;
-
-/* Generic internal functions. */
-static bool Press(MIDIState* curr, MIDIState* prev, int button) {
-	return (curr->note_ons[button] - prev->note_ons[button]) > 0;
-}
-static bool Release(MIDIState* curr, MIDIState* prev, int button) {
-	return (curr->note_offs[button] - prev->note_offs[button]) > 0;
-}
-static bool Down(MIDIState* curr, MIDIState* prev, int button) {
-	return curr->note_ons[button] > prev->note_offs[button];
-}
-static bool ButtonPress(const char* id, MIDIState* curr, MIDIState* prev, int button) {
-	return gui::Button(id) || Press(curr, prev, button);
-}
-static bool ButtonRelease(const char* id, MIDIState* curr, MIDIState* prev, int button) {
-	return gui::Button(id) || Release(curr, prev, button);
-}
-static bool SliderFloat(const char* id, MIDIState* curr, MIDIState* prev, int knob, float* v, float v_min, float v_max, const char* format, float power) {
-	float knob_scale = 1.0f / 100.0f;
-	if (format) {
-		const char* dig = format;
-		while (*dig && (*dig++ != '.'));
-		if (*dig) {
-			knob_scale = 1.0f / powf(10.0f, float(atoi(dig)));
-		}
-	}
-	int del = curr->value[knob] - prev->value[knob];
-	float linear_v = power == 1.0f ? *v : powf(*v, 1.0f / power);
-	linear_v = min(v_max, max(v_min, linear_v + del * knob_scale));
-	*v = power == 1.0f ? linear_v : powf(linear_v, power);
-
-	return gui::SliderFloat(id, v, v_min, v_max, format, power) || del != 0;
-}
-static bool SliderFloatWithDefault(const char* id, MIDIState* curr, MIDIState* prev, int knob, float* v, float v_default, float v_min, float v_max, const char* format, float power) {
-	gui::PushID(id);
-	bool changed = SliderFloat(id, curr, prev, knob, v, v_min, v_max, format, power);
-	gui::SameLine();
-	if (ButtonRelease("default", curr, prev, knob)) {
-		*v = v_default;
-		changed |= true;
-	}
-	gui::PopID();
-	return changed;
-}
-
-/* Specific functions tuned to the midi device. */
 bool twisterSliderFloat(const char* id, int knob, float* v, float v_min, float v_max, const char* format, float power) {
-	return SliderFloat(id, twister_curr, twister_prev, twisterKnobRemap(knob), v, v_min, v_max, format, power);
+	int knobs[] = { twisterKnobRemap(knob) };
+	return SliderFloatN(1, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
 }
-bool twisterSliderFloatWithDefault(const char* id, int knob, float* v, float v_default, float v_min, float v_max, const char* format, float power) {
-	return SliderFloatWithDefault(id, twister_curr, twister_prev, twisterKnobRemap(knob), v, v_default, v_min, v_max, format, power);
+bool twisterSliderFloat2(const char* id, int knob0, int knob1, float* v, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1) };
+	return SliderFloatN(2, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+}
+bool twisterSliderFloat3(const char* id, int knob0, int knob1, int knob2, float* v, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2) };
+	return SliderFloatN(3, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+}
+bool twisterSliderFloat4(const char* id, int knob0, int knob1, int knob2, int knob3, float* v, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2), twisterKnobRemap(knob3) };
+	return SliderFloatN(4, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+}
+bool twisterSliderFloatClickDefault(const char* id, int knob, float* v, float v_default, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob) };
+	return SliderFloatN(1, id, twister_curr, twister_prev, knobs, v, &v_default, v_min, v_max, format, power);
+}
+bool twisterSliderFloat2ClickDefault(const char* id, int knob0, int knob1, float* v, float* v_defaults, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1) };
+	return SliderFloatN(2, id, twister_curr, twister_prev, knobs, v, v_defaults, v_min, v_max, format, power);
+}
+bool twisterSliderFloat3ClickDefault(const char* id, int knob0, int knob1, int knob2, float* v, float* v_defaults, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2) };
+	return SliderFloatN(3, id, twister_curr, twister_prev, knobs, v, v_defaults, v_min, v_max, format, power);
+}
+bool twisterSliderFloat4ClickDefault(const char* id, int knob0, int knob1, int knob2, int knob3, float* v, float* v_defaults, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2), twisterKnobRemap(knob3) };
+	return SliderFloatN(4, id, twister_curr, twister_prev, knobs, v, v_defaults, v_min, v_max, format, power);
+}
+bool twisterSliderFloatClickPrint(const char* id, int knob, float* v, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob) };
+	return SliderFloatNClickPrint(1, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+}
+bool twisterSliderFloat2ClickPrint(const char* id, int knob0, int knob1, float* v, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1) };
+	return SliderFloatNClickPrint(2, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+}
+bool twisterSliderFloat3ClickPrint(const char* id, int knob0, int knob1, int knob2, float* v, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2) };
+	return SliderFloatNClickPrint(3, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+}
+bool twisterSliderFloat4ClickPrint(const char* id, int knob0, int knob1, int knob2, int knob3, float* v, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2), twisterKnobRemap(knob3) };
+	return SliderFloatNClickPrint(4, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+}
+bool twisterSliderFloatClickToggle(const char* id, int knob, float* v, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob) };
+	return SliderFloatNClickToggle(1, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+}
+bool twisterSliderFloat2ClickToggle(const char* id, int knob0, int knob1, float* v, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1) };
+	return SliderFloatNClickToggle(2, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+}
+bool twisterSliderFloat3ClickToggle(const char* id, int knob0, int knob1, int knob2, float* v, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2) };
+	return SliderFloatNClickToggle(3, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
+}
+bool twisterSliderFloat4ClickToggle(const char* id, int knob0, int knob1, int knob2, int knob3, float* v, float v_min, float v_max, const char* format, float power) {
+	int knobs[] = { twisterKnobRemap(knob0), twisterKnobRemap(knob1), twisterKnobRemap(knob2), twisterKnobRemap(knob3) };
+	return SliderFloatNClickToggle(4, id, twister_curr, twister_prev, knobs, v, 0, v_min, v_max, format, power);
 }
 bool twisterKnobButton(const char* id, int knob) {
-	return ButtonRelease(id, twister_curr, twister_prev, twisterKnobRemap(knob));
+	return ButtonPress(id, twister_curr, twister_prev, twisterKnobRemap(knob));
+}
+bool fighterRadioButton(const char* id, int button, int* v, int v_button) {
+	return RadioButton(id, fighter_curr, fighter_prev, fighterButtonRemap(button), v, v_button);
+}
+bool fighterCheckbox(const char* id, int button, bool* v) {
+	return Checkbox(id, fighter_curr, fighter_prev, fighterButtonRemap(button), v);
+}
+bool fighterCheckboxMomentary(const char* id, int button, bool* v) {
+	return CheckboxMomentary(id, fighter_curr, fighter_prev, fighterButtonRemap(button), v);
 }
 int  twisterKnobValue(int knob) {
 	return twister_curr->value[twisterKnobRemap(knob)];
@@ -105,7 +274,7 @@ bool twisterKnobDown(int knob) {
 	return Down(twister_curr, twister_prev, twisterKnobRemap(knob));
 }
 bool fighterButton(const char* id, int button) {
-	return ButtonRelease(id, fighter_curr, fighter_prev, fighterButtonRemap(button));
+	return ButtonPress(id, fighter_curr, fighter_prev, fighterButtonRemap(button));
 }
 bool fighterPress(int button) {
 	return Press(fighter_curr, fighter_prev, fighterButtonRemap(button));
@@ -115,23 +284,4 @@ bool fighterRelease(int button) {
 }
 bool fighterDown(int button) {
 	return Down(fighter_curr, fighter_prev, fighterButtonRemap(button));
-}
-
-/* Core init/update/teardown. */
-void devmidiInit() {
-	midiInit(midi_device_config, sizeof(midi_device_config) / sizeof(midi_device_config[0]));
-}
-void devmidiTerm() {
-	midiTerm();
-}
-void devmidiUpdate() {
-	if (midiGetState(&twister[write_idx], 0)) {
-	}
-	if (midiGetState(&fighter[write_idx], 1)) {
-	}
-	twister_curr = &twister[    write_idx];
-	twister_prev = &twister[1 - write_idx];
-	fighter_curr = &fighter[    write_idx];
-	fighter_prev = &fighter[1 - write_idx];
-	write_idx = 1-write_idx;
 }
