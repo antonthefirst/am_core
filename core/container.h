@@ -2,8 +2,8 @@
 #define _container_h_
 #include <initializer_list>
 #include "memory.h"
-#include "core/log.h" //for assertm
-#include "maths.h" //for max
+#include "core/platform.h" //for assertm
+#include "math/maths.h" //for max
 #include "core/basic_types.h"
 #include <new>
 
@@ -16,13 +16,13 @@
 #endif
 
 #if CONTAINER_CHECK_BOUNDS
-#define CHECK_BOUNDS(i, m) assertm((i >= 0 && i < m), "Index out of bounds %lld / %lld", i,m)
+#define CHECK_BOUNDS(i, m) ASSERTM((i >= 0 && i < m), "Index out of bounds %lld / %lld", i,m)
 #else
 #define CHECK_BOUNDS(i, m)
 #endif
 
 #if CONTAINER_CHECK_NULL
-#define CHECK_NULL(p) assertm(p, "Container pointer is null")
+#define CHECK_NULL(p) ASSERTM(p, "Container pointer is null")
 #else
 #define CHECK_NULL(p)
 #endif
@@ -36,16 +36,23 @@ typedef int16_t s16;
 typedef int32_t s32;
 typedef int64_t s64;
 
+// It's convenient in most places to use 'int' as the count of things in an array
+// Realistically, we're not gonna have more than 2B of any "thing"
+// You can easily have >2B *bytes* of stuff, but really if you're using Bunch<char> to store >2B bytes, you're probably doing it wrong.
+// Use a manual buffer instead.
+// Also it's signed because signed is convenient and less error prone, and unsigned only buys you 4B instead of 2B things which we already don't need.
+// Only reason this is a typedef is to make it easy to change, if you want to for some reason. It's the same on x86 and x64, since int=4bytes on both.
+typedef int BunchCount;
 
 // a bunch of objects, unordered
 // fast append and erase
-// id's are not stable on erase
+// counter's are not stable on erase
 // pointers are not stable on append or erase (due to potential resize in append)
 template<typename T>
 struct Bunch {
 	T* ptr = 0;
-	int64_t maxcount = 0;
-	int64_t count = 0;
+	BunchCount maxcount = 0;
+	BunchCount count = 0;
 
 	Bunch() { }
 	~Bunch() {
@@ -74,39 +81,59 @@ struct Bunch {
 			push(*i);
 		return *this;
 	}
+	bool operator==(const Bunch& rhs) {
+		if (count != rhs.count) return false;
+		for (BunchCount i = 0; i < count; ++i)
+			if (ptr[i] != rhs[i])
+				return false;
+		return true;
+	}
+	bool operator!=(const Bunch& rhs) {
+		return !(operator==(rhs));
+	}
 	Bunch& copypod(const Bunch& rhs) { // copy if the contents are plain old data
 		reserve(rhs.count);
 		count = rhs.count;
 		memcpy(ptr, rhs.ptr, size_t(rhs.bytes())); //64bit
 		return *this;
 	}
+	void append(const Bunch& rhs) {
+		for (int i = 0; i < rhs.count; ++i) {
+			push(rhs[i]);
+		}
+	}
 	void clear() {
 		count = 0;
 	}
-	bool empty() {
+	bool empty() const {
 		return count == 0;
 	}
-	void reserve(int64_t size) {
+	void reserve(BunchCount size) {
 		if (size > maxcount) {
 			ptr = (T*)realloc(ptr, size_t(size * sizeof(T))); //64bit
-			assertm(ptr, "Out of memory! %p", ptr);
+			ASSERTM(ptr, "Out of memory! (asked for %d MB)\n", size_t(size * sizeof(T)) / (1024*1024));
 			maxcount = size;
 		}
 	}
-	void setgarbage(int64_t size) {
+	void clear_and_reserve(BunchCount size) {
+		clear();
+		reserve(size);
+	}
+	void setgarbage(BunchCount size) {
 		reserve(size);
 		count = size;
 	}
 	void push(const T& t) {
 		if (count >= maxcount)
-			reserve((2 * max(int64_t(2), maxcount)));
+			reserve((2 * max(BunchCount(2), maxcount)));
 		CHECK_NULL(ptr);
 		CHECK_BOUNDS(count, maxcount);
+		new(ptr + count) T; // need to construct it even if we're about to overwrite it, because the = operator may depend on constructor initialized state (like Bunch expecting count=maxcount=0 and ptr = 0)
 		ptr[count++] = t;
 	}
 	T& push() {
 		if (count >= maxcount)
-			reserve((2 * max(int64_t(2), maxcount)));
+			reserve((2 * max(BunchCount(2), maxcount)));
 		CHECK_NULL(ptr);
 		CHECK_BOUNDS(count, maxcount);
 		new(ptr+(count++)) T;
@@ -114,18 +141,18 @@ struct Bunch {
 	}
 	T& pushgarbage() {
 		if (count >= maxcount)
-			reserve((2 * max(int64_t(2), maxcount)));
+			reserve((2 * max(BunchCount(2), maxcount)));
 		CHECK_NULL(ptr);
 		CHECK_BOUNDS(count, maxcount);
 		count++;
 		return ptr[count - 1];
 	}
-	void pushi(int64_t num) {
+	void pushi(BunchCount num) {
 		reserve(num);
 		for (num; num > 0; --num)
 			push();
 	}
-	void pushi(int64_t num, const T& val) {
+	void pushi(BunchCount num, const T& val) {
 		reserve(num);
 		for (num; num > 0; --num)
 			push(val);
@@ -137,18 +164,19 @@ struct Bunch {
 		push(t);
 	}
 	T* find(const T& target) {
-		for (int64_t i = 0; i < count; ++i)
+		for (BunchCount i = 0; i < count; ++i)
 			if (ptr[i] == target)
 				return &ptr[i];
 		return 0;
 	}
-	void insert(int64_t i, const T& val) {
+	void insert(BunchCount i, const T& val) {
 		if (count >= maxcount)
-			reserve((2 * max(int64_t(2), maxcount)));
+			reserve((2 * max(BunchCount(2), maxcount)));
 		CHECK_NULL(ptr);
 		CHECK_BOUNDS(count, maxcount);
-		assert(count-i >= 0);
+		ASSERT(count-i >= 0);
 		memmove(ptr+i+1, ptr+i, (count-i)*sizeof(T));
+		new(ptr + i) T;
 		ptr[i] = val;
 		count++;
 	}
@@ -165,43 +193,43 @@ struct Bunch {
 	void pop() {
 		CHECK_NULL(ptr);
 		CHECK_BOUNDS(count-1, count);
-		count = max(int64_t(0), count - 1);
+		count = max(BunchCount(0), count - 1);
 	}
-	T& top() {
+	T& back() {
 		CHECK_NULL(ptr);
 		CHECK_BOUNDS(count-1, count);
 		return ptr[count - 1];
 	}
 	T poptop() {
-		T ret = top();
+		T ret = back();
 		pop();
 		return ret;
 	}
-	void erase(int64_t i) {
+	void erase(BunchCount i) {
 		CHECK_NULL(ptr);
 		CHECK_BOUNDS(count-1, count);
-		assert((count-i-1) >= 0);
+		ASSERT((count-i-1) >= 0);
 		memmove(ptr+i, ptr+i+1, (count-i-1)*sizeof(T));
-		count = max(int64_t(0), count - 1);
+		count = max(BunchCount(0), count - 1);
 	}
-	void remove(int64_t i) {
+	void remove(BunchCount i) {
 		CHECK_NULL(ptr);
 		CHECK_BOUNDS(i, count);
 		if (i != count - 1)
-			ptr[i] = top();
-		count = max(int64_t(0), count - 1);
+			ptr[i] = back();
+		count = max(BunchCount(0), count - 1);
 	}
-	T& operator[](int64_t i) {
+	T& operator[](BunchCount i) {
 		CHECK_NULL(ptr);
 		CHECK_BOUNDS(i, count);
 		return ptr[i];
 	}
-	const T& operator[](int64_t i) const {
+	const T& operator[](BunchCount i) const {
 		CHECK_NULL(ptr);
 		CHECK_BOUNDS(i, count);
 		return ptr[i];
 	}
-	int64_t bytes() const {
+	size_t bytes() const {
 		return count*sizeof(T);
 	}
 	T* end() const {
@@ -324,7 +352,7 @@ struct Bin {
 	void push(const T& t) {
 		if (count == maxcount) {
 			log("WARNING: Bin is full!\n");
-			assertm(count < maxcount, "Bin overflow");
+			ASSERTM(count < maxcount, "Bin overflow");
 			return;
 		}
 		ptr[count++] = t;
@@ -334,7 +362,7 @@ struct Bin {
 			new(ptr+(count++)) T;
 		} else {
 			log("WARNING: Bin is full!\n");
-			assertm(count < maxcount, "Bin overflow");
+			ASSERTM(count < maxcount, "Bin overflow");
 		}
 		return ptr[count-1];
 	}
@@ -351,7 +379,7 @@ struct Bin {
 	void pop() {
 		if (count == 0) {
 			log("WARNING: Bin is empty!\n");
-			assertm(count > 0, "Bin underflow");
+			ASSERTM(count > 0, "Bin underflow");
 			return;
 		}
 		count = max(0, count - 1);
@@ -409,11 +437,11 @@ struct StaticArray {
 			ptr[i] = t;
 	}
 	void push(const T& d) {
-		assertm(count < max_count, "Static Stack overflow");
+		ASSERTM(count < max_count, "Static Stack overflow");
 		ptr[count++] = d;
 	}
 	void pop() {
-		assertm(count > 0, "Static Stack underflow");
+		ASSERTM(count > 0, "Static Stack underflow");
 		--count;
 	}
 	void clear() {
@@ -444,7 +472,7 @@ struct Array {
 	}
 	void alloc(int _count) {
 		ptr = (T*)malloc(_count*sizeof(T));
-		assertm(ptr, "Out of memory! %p", ptr);
+		ASSERTM(ptr, "Out of memory! %p", ptr);
 		count = _count;
 	}
 	void free() {
@@ -485,7 +513,7 @@ struct Stack {
 	}
 	void alloc(int _max_count) {
 		ptr = (T*)malloc(_max_count*sizeof(T));
-		assertm(ptr, "Out of memory! %p", ptr);
+		ASSERTM(ptr, "Out of memory! %p", ptr);
 		count = 0;
 		max_count = _max_count;
 	}
@@ -496,11 +524,11 @@ struct Stack {
 		max_count = 0;
 	}
 	void push(const T& d) {
-		assertm(count < max_count, "Stack overflow");
+		ASSERTM(count < max_count, "Stack overflow");
 		ptr[count++] = d;
 	}
 	T pop() {
-		assertm(count > 0, "Stack underflow");
+		ASSERTM(count > 0, "Stack underflow");
 		return ptr[--count];
 	}
 	void clear() {
@@ -533,7 +561,7 @@ struct Array2D {
 		height = _height;
 		count = width * height;
 		ptr = (T*)malloc(count*sizeof(T));
-		assertm(ptr, "Out of memory! %p", ptr);
+		ASSERTM(ptr, "Out of memory! %p", ptr);
 	}
 	void free() {
 		memFree(ptr);
@@ -595,7 +623,7 @@ struct Array3D {
 		width_x_depth = width*depth;
 		count = width * height * depth;
 		ptr = (T*)malloc(count*sizeof(T));
-		assertm(ptr, "Out of memory! %p", ptr);
+		ASSERTM(ptr, "Out of memory! %p", ptr);
 	}
 	void free() {
 		memFree(ptr);

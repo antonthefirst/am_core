@@ -20,8 +20,13 @@
 // bring certain std functions into global scope
 template <typename T> inline const T& min(const T& a, const T& b) { return std::min(a, b); }
 template <typename T> inline const T& max(const T& a, const T& b) { return std::max(a, b); }
-template <typename T> inline const T& abs(const T& a) { return std::abs(a); }
+//template <typename T> inline const T& abs(const T& a) { return std::abs(a); }
 template <typename T> inline const T& sqrt(const T& a) { return std::sqrt(a); }
+
+//inline float        abs(float a) noexcept  { return std::abs(a); }
+//inline double       abs(double a) noexcept  { return std::abs(a); }
+//inline int          abs(int a) noexcept { return std::abs(a); }
+inline unsigned int abs(unsigned int a) noexcept  { return a; }
 
 
 /* Real and Integer functions */
@@ -34,6 +39,13 @@ inline T clamp(T s, T s_min, T s_max) {
 template<typename T>
 inline T sq(T a) {
 	return a * a;
+}
+
+inline float saturate(float f) {
+	return clamp(f, 0.0f, 1.0f);
+}
+inline double saturate(double f) {
+	return clamp(f, 0.0, 1.0);
 }
 
 
@@ -51,6 +63,9 @@ inline T sign(T a) {
 
 template <typename T>
 inline T fract(T f) { return f - std::floor(f);  }
+
+inline float  roundTowardZero(float f)  { return std::floor(f + 0.5f); }
+inline double roundTowardZero(double f) { return std::floor(f + 0.5);  }
 
 template <typename T>
 inline T lerp(T a, T b, T t) { return (b-a)*t + a;  }
